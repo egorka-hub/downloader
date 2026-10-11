@@ -66,11 +66,6 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	filename := path.Base(url)
 	fmt.Print(formatInfo(filename, info))
 
-	err = os.MkdirAll(savePath, 0755)
-	if err != nil {
-		return err
-	}
-
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
@@ -99,17 +94,7 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	return nil
 }
 
-func main() {
-	if len(os.Args) < 3 {
-		fmt.Println("Использование: downloader <директория> <url1> [url2...]")
-		os.Exit(1)
-	}
-
-	savePath := os.Args[1]
-	urls := os.Args[2:]
-
-	client := &http.Client{Timeout: 30 * time.Second}
-
+func downloadAll(client *http.Client, urls []string, savePath string) []error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(urls))
 
@@ -126,15 +111,36 @@ func main() {
 	wg.Wait()
 	close(errCh)
 
-	hasErr := false
+	var errs []error
 	for err := range errCh {
-		hasErr = true
-		fmt.Println("Ошибка:", err)
+		errs = append(errs, err)
 	}
 
-	if !hasErr {
-		fmt.Println("Все файлы загружены!")
-	} else {
+	return errs
+}
+
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Println("Использование: downloader <директория> <url1> [url2...]")
 		os.Exit(1)
 	}
+
+	savePath := os.Args[1]
+	urls := os.Args[2:]
+
+	err := os.MkdirAll(savePath, 0755)
+	if err != nil {
+		fmt.Println("Не удалось создать директорию:", err)
+		os.Exit(1)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	if errs := downloadAll(client, urls, savePath); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Println("Ошибка:", e)
+		}
+		os.Exit(1)
+	}
+	fmt.Println("Все файлы загружены!")
 }
