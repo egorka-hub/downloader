@@ -8,9 +8,12 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
+
+const chunkSize = 10 * 1024 * 1024 // 10 MB
 
 type fileInfo struct {
 	size           int64
@@ -64,7 +67,11 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	}
 
 	filename := path.Base(url)
-	fmt.Print(formatInfo(filename, info))
+	out := formatInfo(filename, info)
+	if info.size >= 0 {
+		out += formatChunks(info.size)
+	}
+	fmt.Print(out)
 
 	resp, err := client.Get(url)
 	if err != nil {
@@ -83,6 +90,12 @@ func downloadFile(client *http.Client, url, savePath string) error {
 		return err
 	}
 	defer file.Close()
+
+	if info.size >= 0 {
+		if err := file.Truncate(info.size); err != nil {
+			return err
+		}
+	}
 
 	_, err = io.Copy(file, resp.Body)
 	if err != nil {
@@ -117,6 +130,31 @@ func downloadAll(client *http.Client, urls []string, savePath string) []error {
 	}
 
 	return errs
+}
+
+func countChunks(fileSize int64) int64 {
+	return (fileSize + chunkSize - 1) / chunkSize
+}
+
+func chunkBounds(i, fileSize int64) (start, end int64) {
+	start = i * chunkSize
+	end = min((i+1)*chunkSize-1, fileSize-1)
+	return start, end
+}
+
+func formatChunks(fileSize int64) string {
+	n := countChunks(fileSize)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Размер чанка: %d байт\n", chunkSize)
+	fmt.Fprintf(&b, "Количество чанков: %d\n", n)
+
+	for i := range n {
+		start, end := chunkBounds(i, fileSize)
+		fmt.Fprintf(&b, "Чанк %d/%d: байты %d-%d\n", i+1, n, start, end)
+	}
+
+	return b.String()
 }
 
 func main() {
