@@ -7,16 +7,71 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"time"
 )
 
-func downloadFile(url, savePath string) error {
-	err := os.MkdirAll(savePath, 0755)
+type fileInfo struct {
+	size           int64
+	supportsResume bool
+}
+
+func formatInfo(name string, info fileInfo) string {
+	size := "неизвестен"
+	if info.size >= 0 {
+		size = fmt.Sprintf("%d байт", info.size)
+	}
+
+	resume := "не поддерживается"
+	start := "Начало загрузки целиком..."
+	if info.supportsResume {
+		resume = "поддерживается"
+		start = "Начало загрузки..."
+	}
+
+	return fmt.Sprintf("Файл: %s\n  Размер: %s\n  Докачка: %s\n%s\n", name, size, resume, start)
+}
+
+func fetchFileInfo(client *http.Client, url string) (fileInfo, error) {
+	info := fileInfo{size: -1}
+
+	resp, err := client.Head(url)
+	if err != nil {
+		return info, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return info, fmt.Errorf("сервер вернул %d", resp.StatusCode)
+	}
+
+	contentLength := resp.Header.Get("Content-Length")
+	if size, err := strconv.ParseInt(contentLength, 10, 64); err == nil {
+		info.size = size
+	}
+
+	acceptRanges := resp.Header.Get("Accept-Ranges")
+	info.supportsResume = acceptRanges == "bytes"
+
+	return info, nil
+}
+
+func downloadFile(client *http.Client, url, savePath string) error {
+	info, err := fetchFileInfo(client, url)
+	if err != nil {
+		info = fileInfo{size: -1}
+	}
+
+	filename := path.Base(url)
+	fmt.Print(formatInfo(filename, info))
+
+	err = os.MkdirAll(savePath, 0755)
 	if err != nil {
 		return err
 	}
 
-	resp, err := http.Get(url)
+	resp, err := client.Get(url)
 	if err != nil {
 		return err
 	}
@@ -25,8 +80,6 @@ func downloadFile(url, savePath string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("сервер вернул %d", resp.StatusCode)
 	}
-
-	filename := path.Base(url)
 
 	fullPath := filepath.Join(savePath, filename)
 
@@ -55,15 +108,16 @@ func main() {
 	savePath := os.Args[1]
 	urls := os.Args[2:]
 
+	client := &http.Client{Timeout: 30 * time.Second}
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(urls))
 
 	for _, url := range urls {
-		fmt.Printf("Начало загрузки: %s\n", path.Base(url))
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			err := downloadFile(u, savePath)
+			err := downloadFile(client, u, savePath)
 			if err != nil {
 				errCh <- fmt.Errorf("%s: %w", path.Base(u), err)
 			}
