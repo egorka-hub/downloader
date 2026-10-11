@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sync"
 )
 
 func downloadFile(url, savePath string) error {
@@ -54,11 +55,32 @@ func main() {
 	savePath := os.Args[1]
 	urls := os.Args[2:]
 
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(urls))
+
 	for _, url := range urls {
-		fmt.Println("Скачивание:", url)
-		err := downloadFile(url, savePath)
-		if err != nil {
-			fmt.Println("Ошибка:", err)
-		}
+		fmt.Printf("Начало загрузки: %s\n", path.Base(url))
+		wg.Add(1)
+		go func(u string) {
+			defer wg.Done()
+			err := downloadFile(u, savePath)
+			if err != nil {
+				errCh <- fmt.Errorf("%s: %w", path.Base(u), err)
+			}
+		}(url)
+	}
+	wg.Wait()
+	close(errCh)
+
+	hasErr := false
+	for err := range errCh {
+		hasErr = true
+		fmt.Println("Ошибка:", err)
+	}
+
+	if !hasErr {
+		fmt.Println("Все файлы загружены!")
+	} else {
+		os.Exit(1)
 	}
 }
