@@ -1,0 +1,30 @@
+# Compiled binary
+/downloader
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and coverage output
+*.test
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Downloaded files (default output directory)
+/downloads/
+
+# IDE settings
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
