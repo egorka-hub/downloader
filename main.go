@@ -13,7 +13,11 @@ import (
 	"time"
 )
 
-const chunkSize = 10 * 1024 * 1024 // 10 MB
+const (
+	chunkSize  = 10 * 1024 * 1024 // 10 MB
+	maxRetries = 3
+	retryDelay = 2 * time.Second
+)
 
 type fileInfo struct {
 	size           int64
@@ -128,8 +132,9 @@ func downloadFile(client *http.Client, url, savePath string) error {
 			continue
 		}
 		start, end := chunkBounds(i, info.size)
-		if err := downloadChunk(client, url, file, i, n, start, end); err != nil {
-			return err
+		if err := downloadChunkWithRetry(client, url, file, i, n, start, end); err != nil {
+			fmt.Printf("%v, переходим к следующему чанку\n", err)
+			continue
 		}
 		state.DownloadedChunks[i] = true
 		if err := saveState(statePath, state); err != nil {
@@ -243,6 +248,28 @@ func loadState(statePath string) (DownloadState, bool, error) {
 	}
 
 	return state, true, nil
+}
+
+func downloadChunkWithRetry(client *http.Client, url string, file *os.File, i, n, start, end int64) error {
+	var err error
+	for attempt := range maxRetries {
+		err = downloadChunk(client, url, file, i, n, start, end)
+		if err == nil {
+			break
+		}
+
+		fmt.Printf("Загрузка чанка %d/%d... ошибка: %v\n", i+1, n, err)
+		if attempt < maxRetries-1 {
+			fmt.Printf("  Повторная попытка через %v (%d/%d)...\n", retryDelay, attempt+1, maxRetries)
+			time.Sleep(retryDelay)
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("чанк %d/%d: не удалось загрузить после %d попыток: %w", i+1, n, maxRetries, err)
+	}
+
+	return nil
 }
 
 func main() {
