@@ -85,21 +85,34 @@ func downloadFile(client *http.Client, url, savePath string) error {
 
 	n := countChunks(info.size)
 
-	state := DownloadState{
-		URL:              url,
-		TotalSize:        info.size,
-		ChunkSize:        chunkSize,
-		TotalChunks:      int(n),
-		DownloadedChunks: make([]bool, n),
-	}
-
-	if err := saveState(statePath, state); err != nil {
+	state, found, err := loadState(statePath)
+	if err != nil {
 		return err
 	}
 
-	fmt.Println("Создан файл состояния:", filepath.Base(statePath))
+	if found && (state.URL != url || state.TotalSize != info.size || state.ChunkSize != chunkSize || len(state.DownloadedChunks) != int(n)) {
+		found = false
+	}
 
-	file, err := os.Create(fullPath)
+	if found {
+		fmt.Println("Найден файл состояния:", filepath.Base(statePath))
+	} else {
+		state = DownloadState{
+			URL:              url,
+			TotalSize:        info.size,
+			ChunkSize:        chunkSize,
+			TotalChunks:      int(n),
+			DownloadedChunks: make([]bool, n),
+		}
+
+		if err := saveState(statePath, state); err != nil {
+			return err
+		}
+
+		fmt.Println("Создан файл состояния:", filepath.Base(statePath))
+	}
+
+	file, err := os.OpenFile(fullPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
 	}
@@ -110,6 +123,10 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	}
 
 	for i := range n {
+		if state.DownloadedChunks[i] {
+			fmt.Printf("Чанк %d/%d уже загружен, пропускаем\n", i+1, n)
+			continue
+		}
 		start, end := chunkBounds(i, info.size)
 		if err := downloadChunk(client, url, file, i, n, start, end); err != nil {
 			return err
@@ -203,6 +220,29 @@ func saveState(statePath string, state DownloadState) error {
 	}
 
 	return nil
+}
+
+func loadState(statePath string) (DownloadState, bool, error) {
+	_, err := os.Stat(statePath)
+	if os.IsNotExist(err) {
+		return DownloadState{}, false, nil
+	}
+	if err != nil {
+		return DownloadState{}, false, err
+	}
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return DownloadState{}, false, err
+	}
+
+	var state DownloadState
+
+	if err := json.Unmarshal(data, &state); err != nil {
+		return DownloadState{}, false, err
+	}
+
+	return state, true, nil
 }
 
 func main() {
