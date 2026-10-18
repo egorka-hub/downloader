@@ -143,8 +143,10 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	close(jobs)
 
 	fmt.Printf("Запуск %d воркеров...\n", maxConcurrentChunks)
-	for w := range maxConcurrentChunks {
-		wg.Go(func() {
+	for w := 0; w < maxConcurrentChunks; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
 			for i := range jobs {
 				start, end := chunkBounds(i, info.size)
 				if err := downloadChunkWithRetry(client, url, file, &fileMu, i, n, start, end); err != nil {
@@ -159,9 +161,9 @@ func downloadFile(client *http.Client, url, savePath string) error {
 				}
 				stateMu.Unlock()
 
-				fmt.Printf("[Worker %d] Чанк %d/%d загружен\n", w+1, i+1, n)
+				fmt.Printf("[Worker %d] Чанк %d/%d загружен\n", id, i+1, n)
 			}
-		})
+		}(w + 1)
 	}
 	wg.Wait()
 
