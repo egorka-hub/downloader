@@ -21,10 +21,11 @@ type fileInfo struct {
 }
 
 type DownloadState struct {
-	URL         string `json:"url"`
-	TotalSize   int64  `json:"total_size"`
-	ChunkSize   int    `json:"chunk_size"`
-	TotalChunks int    `json:"total_chunks"`
+	URL              string `json:"url"`
+	TotalSize        int64  `json:"total_size"`
+	ChunkSize        int    `json:"chunk_size"`
+	TotalChunks      int    `json:"total_chunks"`
+	DownloadedChunks []bool `json:"downloaded_chunks"`
 }
 
 func formatInfo(name string, info fileInfo) string {
@@ -85,19 +86,17 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	n := countChunks(info.size)
 
 	state := DownloadState{
-		URL:         url,
-		TotalSize:   info.size,
-		ChunkSize:   chunkSize,
-		TotalChunks: int(n),
+		URL:              url,
+		TotalSize:        info.size,
+		ChunkSize:        chunkSize,
+		TotalChunks:      int(n),
+		DownloadedChunks: make([]bool, n),
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
+
+	if err := saveState(statePath, state); err != nil {
 		return err
 	}
-	err = os.WriteFile(statePath, data, 0644)
-	if err != nil {
-		return err
-	}
+
 	fmt.Println("Создан файл состояния:", filepath.Base(statePath))
 
 	file, err := os.Create(fullPath)
@@ -113,6 +112,10 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	for i := range n {
 		start, end := chunkBounds(i, info.size)
 		if err := downloadChunk(client, url, file, i, n, start, end); err != nil {
+			return err
+		}
+		state.DownloadedChunks[i] = true
+		if err := saveState(statePath, state); err != nil {
 			return err
 		}
 	}
@@ -185,6 +188,19 @@ func downloadChunk(client *http.Client, url string, file *os.File, i, n, start, 
 	}
 
 	fmt.Printf("Загрузка чанка %d/%d → записан в позицию %d\n", i+1, n, start)
+
+	return nil
+}
+
+func saveState(statePath string, state DownloadState) error {
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(statePath, data, 0644)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
