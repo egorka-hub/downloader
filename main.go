@@ -148,12 +148,17 @@ func downloadChunk(client *http.Client, url string, file *os.File, i, n, start, 
 		return fmt.Errorf("чанк %d/%d: сервер вернул %d", i+1, n, resp.StatusCode)
 	}
 
-	fmt.Printf("Загрузка чанка %d/%d: bytes=%d-%d → %s\n", i+1, n, start, end, resp.Status)
+	_, err = file.Seek(start, io.SeekStart)
+	if err != nil {
+		return fmt.Errorf("ошибка при установке позиции в файле: %w", err)
+	}
 
 	_, err = io.Copy(file, resp.Body)
 	if err != nil {
 		return err
 	}
+
+	fmt.Printf("Загрузка чанка %d/%d → записан в позицию %d\n", i+1, n, start)
 
 	return nil
 }
