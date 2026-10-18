@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,13 @@ const chunkSize = 10 * 1024 * 1024 // 10 MB
 type fileInfo struct {
 	size           int64
 	supportsResume bool
+}
+
+type DownloadState struct {
+	URL         string `json:"url"`
+	TotalSize   int64  `json:"total_size"`
+	ChunkSize   int    `json:"chunk_size"`
+	TotalChunks int    `json:"total_chunks"`
 }
 
 func formatInfo(name string, info fileInfo) string {
@@ -72,6 +80,25 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	fmt.Print(formatInfo(filename, info))
 
 	fullPath := filepath.Join(savePath, filename)
+	statePath := fullPath + ".progress"
+
+	n := countChunks(info.size)
+
+	state := DownloadState{
+		URL:         url,
+		TotalSize:   info.size,
+		ChunkSize:   chunkSize,
+		TotalChunks: int(n),
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(statePath, data, 0644)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Создан файл состояния:", filepath.Base(statePath))
 
 	file, err := os.Create(fullPath)
 	if err != nil {
@@ -83,7 +110,6 @@ func downloadFile(client *http.Client, url, savePath string) error {
 		return err
 	}
 
-	n := countChunks(info.size)
 	for i := range n {
 		start, end := chunkBounds(i, info.size)
 		if err := downloadChunk(client, url, file, i, n, start, end); err != nil {
