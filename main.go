@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	chunkSize  = 10 * 1024 * 1024 // 10 MB
-	maxRetries = 3
-	retryDelay = 2 * time.Second
+	chunkSize           = 10 * 1024 * 1024 // 10 MB
+	maxRetries          = 3
+	retryDelay          = 2 * time.Second
+	maxConcurrentChunks = 8
 )
 
 type fileInfo struct {
@@ -73,6 +74,7 @@ func fetchFileInfo(client *http.Client, url string) (fileInfo, error) {
 }
 
 func downloadFile(client *http.Client, url, savePath string) error {
+
 	info, err := fetchFileInfo(client, url)
 	if err != nil {
 		return err
@@ -126,21 +128,42 @@ func downloadFile(client *http.Client, url, savePath string) error {
 		return err
 	}
 
+	jobs := make(chan int64, n)
+	var wg sync.WaitGroup
+	var stateMu sync.Mutex
+	var fileMu sync.Mutex
+
 	for i := range n {
 		if state.DownloadedChunks[i] {
-			fmt.Printf("Чанк %d/%d уже загружен, пропускаем\n", i+1, n)
+			fmt.Printf("Пропускаем чанк %d\n", i+1)
 			continue
 		}
-		start, end := chunkBounds(i, info.size)
-		if err := downloadChunkWithRetry(client, url, file, i, n, start, end); err != nil {
-			fmt.Printf("%v, переходим к следующему чанку\n", err)
-			continue
-		}
-		state.DownloadedChunks[i] = true
-		if err := saveState(statePath, state); err != nil {
-			return err
-		}
+		jobs <- i
 	}
+	close(jobs)
+
+	fmt.Printf("Запуск %d воркеров...\n", maxConcurrentChunks)
+	for w := range maxConcurrentChunks {
+		wg.Go(func() {
+			for i := range jobs {
+				start, end := chunkBounds(i, info.size)
+				if err := downloadChunkWithRetry(client, url, file, &fileMu, i, n, start, end); err != nil {
+					fmt.Printf("%v, переходим к следующему чанку\n", err)
+					continue
+				}
+
+				stateMu.Lock()
+				state.DownloadedChunks[i] = true
+				if err := saveState(statePath, state); err != nil {
+					fmt.Printf("Ошибка сохранения состояния: %v\n", err)
+				}
+				stateMu.Unlock()
+
+				fmt.Printf("[Worker %d] Чанк %d/%d загружен\n", w+1, i+1, n)
+			}
+		})
+	}
+	wg.Wait()
 
 	fmt.Println("Файл сохранён:", fullPath)
 
@@ -182,7 +205,7 @@ func chunkBounds(i, fileSize int64) (start, end int64) {
 	return start, end
 }
 
-func downloadChunk(client *http.Client, url string, file *os.File, i, n, start, end int64) error {
+func downloadChunk(client *http.Client, url string, file *os.File, fileMu *sync.Mutex, i, n, start, end int64) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err
@@ -199,17 +222,17 @@ func downloadChunk(client *http.Client, url string, file *os.File, i, n, start, 
 		return fmt.Errorf("чанк %d/%d: сервер вернул %d", i+1, n, resp.StatusCode)
 	}
 
-	_, err = file.Seek(start, io.SeekStart)
-	if err != nil {
-		return fmt.Errorf("ошибка при установке позиции в файле: %w", err)
-	}
-
-	_, err = io.Copy(file, resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Загрузка чанка %d/%d → записан в позицию %d\n", i+1, n, start)
+	fileMu.Lock()
+	_, err = file.WriteAt(data, start)
+	fileMu.Unlock()
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -250,10 +273,10 @@ func loadState(statePath string) (DownloadState, bool, error) {
 	return state, true, nil
 }
 
-func downloadChunkWithRetry(client *http.Client, url string, file *os.File, i, n, start, end int64) error {
+func downloadChunkWithRetry(client *http.Client, url string, file *os.File, fileMu *sync.Mutex, i, n, start, end int64) error {
 	var err error
 	for attempt := range maxRetries {
-		err = downloadChunk(client, url, file, i, n, start, end)
+		err = downloadChunk(client, url, file, fileMu, i, n, start, end)
 		if err == nil {
 			break
 		}
