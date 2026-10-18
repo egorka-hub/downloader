@@ -8,7 +8,6 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -63,25 +62,14 @@ func fetchFileInfo(client *http.Client, url string) (fileInfo, error) {
 func downloadFile(client *http.Client, url, savePath string) error {
 	info, err := fetchFileInfo(client, url)
 	if err != nil {
-		info = fileInfo{size: -1}
+		return err
+	}
+	if info.size < 0 {
+		return fmt.Errorf("размер файла неизвестен")
 	}
 
 	filename := path.Base(url)
-	out := formatInfo(filename, info)
-	if info.size >= 0 {
-		out += formatChunks(info.size)
-	}
-	fmt.Print(out)
-
-	resp, err := client.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("сервер вернул %d", resp.StatusCode)
-	}
+	fmt.Print(formatInfo(filename, info))
 
 	fullPath := filepath.Join(savePath, filename)
 
@@ -91,15 +79,16 @@ func downloadFile(client *http.Client, url, savePath string) error {
 	}
 	defer file.Close()
 
-	if info.size >= 0 {
-		if err := file.Truncate(info.size); err != nil {
-			return err
-		}
+	if err := file.Truncate(info.size); err != nil {
+		return err
 	}
 
-	_, err = io.Copy(file, resp.Body)
-	if err != nil {
-		return err
+	n := countChunks(info.size)
+	for i := range n {
+		start, end := chunkBounds(i, info.size)
+		if err := downloadChunk(client, url, file, i, n, start, end); err != nil {
+			return err
+		}
 	}
 
 	fmt.Println("Файл сохранён:", fullPath)
@@ -142,19 +131,31 @@ func chunkBounds(i, fileSize int64) (start, end int64) {
 	return start, end
 }
 
-func formatChunks(fileSize int64) string {
-	n := countChunks(fileSize)
+func downloadChunk(client *http.Client, url string, file *os.File, i, n, start, end int64) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "Размер чанка: %d байт\n", chunkSize)
-	fmt.Fprintf(&b, "Количество чанков: %d\n", n)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
-	for i := range n {
-		start, end := chunkBounds(i, fileSize)
-		fmt.Fprintf(&b, "Чанк %d/%d: байты %d-%d\n", i+1, n, start, end)
+	if resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("чанк %d/%d: сервер вернул %d", i+1, n, resp.StatusCode)
 	}
 
-	return b.String()
+	fmt.Printf("Загрузка чанка %d/%d: bytes=%d-%d → %s\n", i+1, n, start, end, resp.Status)
+
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
