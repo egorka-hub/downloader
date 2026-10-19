@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -36,7 +38,7 @@ type DownloadState struct {
 	DownloadedChunks []bool `json:"downloaded_chunks"`
 }
 
-func downloadAll(client *http.Client, p *mpb.Progress, urls []string, savePath string) []error {
+func downloadAll(ctx context.Context, client *http.Client, p *mpb.Progress, urls []string, savePath string) []error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(urls))
 
@@ -44,7 +46,7 @@ func downloadAll(client *http.Client, p *mpb.Progress, urls []string, savePath s
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			err := downloadFile(client, p, u, savePath)
+			err := downloadFile(ctx, client, p, u, savePath)
 			if err != nil {
 				errCh <- fmt.Errorf("%s: %w", path.Base(u), err)
 			}
@@ -61,7 +63,7 @@ func downloadAll(client *http.Client, p *mpb.Progress, urls []string, savePath s
 	return errs
 }
 
-func downloadFile(client *http.Client, p *mpb.Progress, url, savePath string) error {
+func downloadFile(ctx context.Context, client *http.Client, p *mpb.Progress, url, savePath string) error {
 
 	info, err := fetchFileInfo(client, url)
 	if err != nil {
@@ -145,25 +147,42 @@ func downloadFile(client *http.Client, p *mpb.Progress, url, savePath string) er
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := range jobs {
-				start, end := chunkBounds(i, info.size)
-				if err := downloadChunkWithRetry(client, p, url, file, &fileMu, i, n, start, end); err != nil {
-					fmt.Fprintf(p, "%s: %v, переходим к следующему чанку\n", filename, err)
-					continue
-				}
 
-				stateMu.Lock()
-				state.DownloadedChunks[i] = true
-				if err := saveState(statePath, state); err != nil {
-					fmt.Fprintf(p, "%s: ошибка сохранения состояния: %v\n", filename, err)
-				}
-				stateMu.Unlock()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case i, ok := <-jobs:
+					if !ok {
+						return
+					}
+					start, end := chunkBounds(i, info.size)
+					if err := downloadChunkWithRetry(client, p, url, file, &fileMu, i, n, start, end); err != nil {
+						fmt.Fprintf(p, "%s: %v, переходим к следующему чанку\n", filename, err)
+						continue
+					}
 
-				bar.IncrBy(int(end - start + 1))
+					stateMu.Lock()
+					state.DownloadedChunks[i] = true
+					if err := saveState(statePath, state); err != nil {
+						fmt.Fprintf(p, "%s: ошибка сохранения состояния: %v\n", filename, err)
+					}
+					stateMu.Unlock()
+
+					bar.IncrBy(int(end - start + 1))
+				}
 			}
 		}()
 	}
 	wg.Wait()
+
+	if ctx.Err() != nil {
+		if err := saveState(statePath, state); err != nil {
+			return err
+		}
+		fmt.Fprintf(p, "%s: состояние сохранено\n", filename)
+		return ctx.Err()
+	}
 
 	return nil
 }
@@ -307,12 +326,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	p := mpb.New()
 
-	errs := downloadAll(client, p, urls, savePath)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+
+	go func() {
+		<-sigChan
+		fmt.Fprintln(p, "\nПолучен сигнал прерывания, завершаем работу...")
+		fmt.Fprintln(p, "Ожидание завершения текущих загрузок...")
+		cancel()
+	}()
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	errs := downloadAll(ctx, client, p, urls, savePath)
 	p.Wait()
+	if ctx.Err() != nil {
+		fmt.Println("Выход")
+		os.Exit(1)
+	}
 	if len(errs) > 0 {
 		for _, e := range errs {
 			fmt.Println("Ошибка:", e)
