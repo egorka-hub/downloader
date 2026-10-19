@@ -18,6 +18,9 @@ go.work.sum
 # Downloaded files (default output directory)
 /downloads/
 
+# Download state files
+*.progress
+
 # IDE settings
 .idea/
 .vscode/

@@ -134,6 +134,7 @@ func downloadFile(ctx context.Context, client *http.Client, p *mpb.Progress, url
 	var wg sync.WaitGroup
 	var stateMu sync.Mutex
 	var fileMu sync.Mutex
+	var failed int
 
 	for i := range n {
 		if state.DownloadedChunks[i] {
@@ -159,6 +160,9 @@ func downloadFile(ctx context.Context, client *http.Client, p *mpb.Progress, url
 					start, end := chunkBounds(i, info.size)
 					if err := downloadChunkWithRetry(client, p, url, file, &fileMu, i, n, start, end); err != nil {
 						fmt.Fprintf(p, "%s: %v, переходим к следующему чанку\n", filename, err)
+						stateMu.Lock()
+						failed++
+						stateMu.Unlock()
 						continue
 					}
 
@@ -182,6 +186,10 @@ func downloadFile(ctx context.Context, client *http.Client, p *mpb.Progress, url
 		}
 		fmt.Fprintf(p, "%s: состояние сохранено\n", filename)
 		return ctx.Err()
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("не удалось загрузить %d из %d чанков, запустите снова для докачки", failed, n)
 	}
 
 	return nil
